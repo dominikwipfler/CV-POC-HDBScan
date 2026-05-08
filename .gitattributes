@@ -1,0 +1,10 @@
+# Normalize line endings to LF in the repository
+* text=auto eol=lf
+
+# Binary files — no conversion
+*.png binary
+*.jpg binary
+*.mp4 binary
+*.avi binary
+*.pt  binary
+*.onnx binary

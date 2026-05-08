@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+ENV/
+
+# YOLO model weights (download separately)
+*.pt
+*.onnx
+*.engine
+
+# Input videos (too large for git)
+input/
+
+# Generated outputs — each run goes into outputs/<video-stem>/
+# Keep the folder itself (with .gitkeep) but ignore all generated content.
+outputs/*/
+outputs_test/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Claude Code session files
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
