@@ -44,19 +44,19 @@ def _parse_args() -> argparse.Namespace:
                    help="Maximale Frame-Anzahl (schneller Testlauf)")
 
     # HDBSCAN
-    p.add_argument("--min-cluster-size", type=int, default=80,
-                   help="HDBSCAN min_cluster_size  [Standard: 80 mit UMAP+epsilon]")
+    p.add_argument("--min-cluster-size", type=int, default=50,
+                   help="HDBSCAN min_cluster_size  [Standard: 50 — klein genug fuer Torwart-Cluster]")
     p.add_argument("--min-samples", type=int, default=5,
                    help="HDBSCAN min_samples  [Standard: 5]")
-    p.add_argument("--kmeans-k", type=int, default=4,
-                   help="K-Means Cluster-Anzahl  [Standard: 4 = TeamA/B + Torwart + Schiri]")
+    p.add_argument("--kmeans-k", type=int, default=5,
+                   help="K-Means Cluster-Anzahl  [Standard: 5 = TeamA/B + TorwartA/B + Schiri]")
 
     # YOLO11 detection (same model as wels-monorepo)
     p.add_argument("--yolo-model",
-                   default="yolo11m.pt",
-                   choices=["yolo11m.pt", "yolo11n.pt", "yolo11s.pt",
-                            "yolov8n.pt", "yolov8m.pt"],
-                   help="YOLO-Modell  [Standard: yolo11m.pt — wie wels-monorepo]")
+                   default="player_detection.pt",
+                   choices=["player_detection.pt", "yolo11m.pt", "yolo11n.pt",
+                            "yolo11s.pt", "yolov8n.pt", "yolov8m.pt"],
+                   help="YOLO-Modell  [Standard: player_detection.pt — spezialisiertes Spieler-Erkennungsmodell]")
     p.add_argument("--yolo-confidence", type=float, default=0.3,
                    help="YOLO Konfidenzschwelle  [Standard: 0.3]")
     p.add_argument("--yolo-imgsz", type=int, default=1280,
@@ -71,13 +71,6 @@ def _parse_args() -> argparse.Namespace:
                    help="Farbkorrektur (White Balance + CLAHE) deaktivieren")
     p.add_argument("--no-roi", action="store_true",
                    help="Automatische Court-ROI-Erkennung deaktivieren")
-
-    # Court keypoint model
-    p.add_argument("--court-model",
-                   default="best_court.pt",
-                   help="YOLO-Pose Modell fuer Court-Keypoints  [Standard: best_court.pt]")
-    p.add_argument("--no-court-model", action="store_true",
-                   help="Court-Keypoint-Modell deaktivieren")
 
     # Misc
     p.add_argument("--no-debug", action="store_true",
@@ -112,7 +105,6 @@ def main() -> None:
         hdbscan_min_samples=args.min_samples,
         kmeans_k=args.kmeans_k,
         save_debug_frames=not args.no_debug,
-        court_model_path="" if args.no_court_model else args.court_model,
     )
 
     log.info("=== HDBSCAN Handball-Team-Clustering POC ===")
@@ -125,8 +117,6 @@ def main() -> None:
              config.hdbscan_min_cluster_size, config.hdbscan_min_samples, config.kmeans_k)
     log.info("Preprocessing: wb+clahe=%s  roi=%s",
              config.use_preprocessing, config.use_roi_calibration)
-    log.info("Court-Modell : %s",
-             config.court_model_path if config.court_model_path else "deaktiviert")
 
     try:
         VideoProcessor(config).process(config.video_path)

@@ -1,246 +1,212 @@
 # HDBSCAN Handball Team Clustering — POC
 
-Proof of Concept zur automatischen Teameinteilung im Handball anhand von Trikotfarben,
-basierend auf HDBSCAN und OpenCV.
+Automatische Teameinteilung und taktische Analyse von Handball-Videos anhand von Trikotfarben. Spielererkennung via spezialisiertem `player_detection.pt` Modell, Rollenzuweisung (Team A/B, Schiedsrichter, Torwart) via HDBSCAN.
 
 ---
 
-## Was ist HDBSCAN?
+## Schnellstart
 
-**HDBSCAN** (Hierarchical Density-Based Spatial Clustering of Applications with Noise)
-ist ein Clustering-Algorithmus, der Datenpunkte nach ihrer **lokalen Dichte** gruppiert.
+```powershell
+# Empfohlener Startbefehl (2-Minuten-Clip, CPU)
+.\.venv\Scripts\python.exe main.py `
+  --video input/0efd265d_test2min.mp4 `
+  --output outputs `
+  --frame-skip 5 `
+  --yolo-imgsz 640
 
-Vereinfacht erklärt: HDBSCAN sucht in einem Datenraum nach „Verdichtungen" — Bereichen,
-in denen viele ähnliche Punkte dicht beieinander liegen. Punkte, die zu keiner solchen
-Verdichtung gehören, werden als **Noise** (Ausreißer) markiert statt in einen Cluster
-gezwungen.
+# Schneller Smoke-Test (nur erste 300 Frames)
+.\.venv\Scripts\python.exe main.py `
+  --video input/0efd265d_test2min.mp4 `
+  --max-frames 300 `
+  --frame-skip 5
 
-Drei wesentliche Eigenschaften machen HDBSCAN besonders:
-
-| Eigenschaft | Bedeutung |
-|---|---|
-| Keine feste Cluster-Anzahl nötig | Der Algorithmus entscheidet selbst, wie viele Gruppen sinnvoll sind |
-| Noise-Handling | Unklare Punkte werden als Ausreißer markiert, nicht falsch zugeordnet |
-| Hierarchisch | Intern wird eine Cluster-Hierarchie gebaut, aus der die stabilsten Gruppen extrahiert werden |
-
----
-
-## Warum HDBSCAN für die Handball-Trikot-Analyse?
-
-Im Handball-Kontext gibt es **kein garantiert festes Schema**: Neben den zwei Teams
-spielen Torwarte (meist Sonderfarbe), Schiedsrichter und evtl. weitere Personen im
-Bild. K-Means würde hier erzwingen, genau k Gruppen zu finden — auch wenn das
-inhaltlich falsch ist.
-
-HDBSCAN ist hier besser weil:
-
-- Die Anzahl sinnvoller Farbcluster variiert (2 Teams + optionale Sonderfarben)
-- Partiell verdeckte Spieler oder Personen am Rand sollen als Noise markiert werden,
-  nicht falsch einem Team zugeordnet
-- Trikotfarben bilden echte Dichteinseln im Farbraum — genau das, was HDBSCAN sucht
-
-**Einschränkung:** Haben beide Teams sehr ähnliche Farben (z. B. zwei Blautöne),
-kann HDBSCAN die Cluster zusammenfassen. In diesem Fall gibt der Silhouette-Score
-Aufschluss darüber, wie trennbar die Farben tatsächlich sind.
+# Taktische Analyse auf bereits berechneten Ergebnissen (kein Video-Neuverarbeitung)
+.\.venv\Scripts\python.exe run_tactical.py `
+  --json outputs/0efd265d_test2min/clustering_results.json `
+  --output outputs/0efd265d_test2min
+```
 
 ---
 
-## HDBSCAN vs. K-Means in diesem Kontext
+## Alle Parameter
 
-| Kriterium | HDBSCAN | K-Means |
+| Parameter | Standard | Beschreibung |
 |---|---|---|
-| Cluster-Anzahl | Automatisch bestimmt | Muss vorab festgelegt werden (k=2) |
-| Noise / Ausreißer | Explizit als -1 markiert | Keine Noise-Erkennung — jeder Punkt wird zugeordnet |
-| Nicht-runde Cluster | Unterstützt | Nur kugelförmige Cluster zuverlässig |
-| Robustheit bei Farbüberlappung | Besser (Noise-Puffer) | Schlechter (schneidet an der falschen Stelle) |
-| Reproduzierbarkeit | Deterministisch | Hängt von zufälliger Initialisierung ab (n_init hilft) |
-| Rechenzeit | Langsamer (O(n log n)) | Schneller für kleine k |
-| Empfehlung | POC / Exploration | Produktion wenn k bekannt und stabil |
-
----
-
-## Weitere HDBSCAN-Einsatzmöglichkeiten im Handball
-
-1. **Formations-Clustering**
-   Spielerpositionen (x, y auf dem Feld) über mehrere Angriffe → HDBSCAN erkennt
-   typische Positionsmuster (3-2-1, 4-2, Kreis-läufer-Zone) ohne Vorgabe der
-   Formations-Anzahl.
-
-2. **Wurfzonen-Analyse**
-   Abschlusspositionen oder Ballflugbahn-Startpunkte werden geclustert → automatische
-   Erkennung bevorzugter Wurfpositionen pro Spieler oder Team.
-
-3. **Laufweg-Typisierung**
-   Tracking-Trajektorien aller Spieler über ein Spiel → HDBSCAN gruppiert typische
-   Laufmuster (Außenspieler-Diagonale, Kreisläufer-Kurzbewegungen) für taktische
-   Nachanalyse.
-
----
-
-## Installation
-
-### Voraussetzungen
-
-- Python 3.9 oder höher
-- pip
-
-### Schritte
-
-```bash
-# 1. Abhängigkeiten installieren
-pip install -r requirements.txt
-
-# YOLO-Modell wird beim ersten Start automatisch heruntergeladen (~6 MB für yolov8n)
-# Internetverbindung beim Erststart erforderlich.
-```
-
-> **Offline-Modus**: Ohne Internetverbindung kann `--no-yolo` übergeben werden.
-> Der MOG2-Fallback-Detektor funktioniert ohne Modelldatei.
-
----
-
-## Verwendung
-
-### Standardstart
-
-```bash
-python main.py --video C:/Users/domwipfler/Downloads/test30sec.mp4
-```
-
-### Alle Optionen
-
-```
---video            Pfad zum Eingabe-Video (Pflicht)
---output           Ausgabeverzeichnis [Standard: outputs]
---frame-skip N     Jeden N-ten Frame verarbeiten [Standard: 5]
---max-frames N     Nur N Frames verarbeiten (schneller Testlauf)
---min-cluster-size Mindestgröße eines HDBSCAN-Clusters [Standard: 5]
---min-samples      HDBSCAN min_samples [Standard: 3]
---kmeans-k         K-Means Cluster-Anzahl [Standard: 2]
---yolo-model       yolov8n.pt | yolov8s.pt | yolov8m.pt
---yolo-confidence  Konfidenzschwelle für YOLO [Standard: 0.5]
---no-yolo          MOG2-Fallback statt YOLO
---no-debug         Keine Debug-Bilder speichern
---verbose          Ausführliches Logging
-```
-
-### Beispiele
-
-```bash
-# Schneller Testlauf (nur erste 150 Frames)
-python main.py --video input/test30sec.mp4 --max-frames 150
-
-# Feinere Erkennung bei vielen Spielern
-python main.py --video input/test30sec.mp4 --frame-skip 3 --min-cluster-size 8
-
-# Aggressiveres Clustering bei kleinen Teams
-python main.py --video input/test30sec.mp4 --min-cluster-size 3 --min-samples 2
-
-# Ohne Internet / YOLO
-python main.py --video input/test30sec.mp4 --no-yolo
-```
+| `--video` | — | Pfad zum Eingabe-Video (Pflicht) |
+| `--output` | `outputs` | Ausgabeverzeichnis (pro Video ein Unterordner) |
+| `--frame-skip N` | `5` | Jeden N-ten Frame verarbeiten |
+| `--max-frames N` | alle | Abbruch nach N Frames (Schnelltest) |
+| `--min-cluster-size N` | `50` | HDBSCAN min_cluster_size — kleiner = mehr Cluster |
+| `--min-samples N` | `5` | HDBSCAN min_samples |
+| `--kmeans-k N` | `5` | K-Means Vergleich: Anzahl Cluster |
+| `--yolo-model` | `player_detection.pt` | Erkennungsmodell |
+| `--yolo-confidence` | `0.3` | Konfidenz-Schwelle |
+| `--yolo-imgsz` | `1280` | YOLO Input-Bildgröße (640 = schneller, 1280 = genauer) |
+| `--device` | `cpu` | `cpu` oder `cuda` |
+| `--no-preprocessing` | — | White Balance + CLAHE deaktivieren |
+| `--no-roi` | — | Automatische Court-ROI-Erkennung deaktivieren |
+| `--verbose` | — | Ausführliches Logging (zeigt Cluster-Tabelle) |
 
 ---
 
 ## Ausgaben
 
-Nach der Verarbeitung befinden sich in `outputs/`:
+Alle Dateien landen in `outputs/<video-name>/`:
 
-| Datei / Ordner | Inhalt |
+| Datei | Inhalt |
 |---|---|
-| `output_hdbscan.mp4` | Vollständiges Video mit Bounding-Boxes und Cluster-Labels |
+| `output_hdbscan.mp4` | Video mit Bounding-Boxes + Rollenbezeichnungen |
 | `output_comparison.mp4` | Side-by-Side: HDBSCAN (links) vs. K-Means (rechts) |
-| `cluster_scatter.png` | 2D PCA-Visualisierung der Feature-Punkte mit Clusterfarben |
-| `clustering_results.json` | Vollständige Rohdaten: Frame, Bbox, Features, Labels |
-| `clustering_results.csv` | Tabellarische Übersicht ohne rohe Features (Excel-kompatibel) |
-| `debug_frames/` | Einzelne Frame-Snapshots: Original, Detektionen, Torso-ROIs |
-
-### Farb-Legende im Video
-
-| Farbe | Bedeutung |
-|---|---|
-| Grün | Team A (größter Cluster) |
-| Orange | Team B (zweitgrößter Cluster) |
-| Cyan | Team C / Torwart / Schiedsrichter |
-| Dunkelrot | Noise / Unklar — kein stabiler Cluster |
+| `cluster_scatter.png` | 2D UMAP-Scatter der Farbfeatures mit Clustereinfärbung |
+| `clustering_results.json` | Vollständige Rohdaten: Frame, BBox, Features, Labels |
+| `clustering_results.csv` | Tabellarische Übersicht (Excel-kompatibel) |
+| `tactical_abwehr_*.png` | Abwehr-Formations-Häufigkeit pro Team |
+| `tactical_angriff_*.png` | Angriffsmuster / Spielzüge pro Team |
+| `tactical_shot_zones.png` | Aufenthalts-Heatmap im Angriff |
+| `tactical_trajectories.png` | Laufwege + Bewegungsstatistiken nach Rolle |
+| `debug_frames/` | Einzel-Frame-Snapshots mit Torso-ROI-Vorschau |
 
 ---
 
-## Technische Architektur
+## Architektur
 
 ```
-main.py                 → CLI-Einstiegspunkt, Argument-Parsing
+main.py                     CLI, Argument-Parsing
 src/
-  config.py             → Alle Parameter als Dataclass
-  player_detector.py    → YOLOv8 Personenerkennung (+ MOG2-Fallback)
-  feature_extractor.py  → Trikotfarb-Features: LAB-Statistiken + HSV-Hue-Histogramm
-  clustering.py         → HDBSCAN + K-Means, Silhouette-Score, Rollen-Mapping
-  visualizer.py         → OpenCV-Annotation, Legende, matplotlib Scatter-Plot
-  reporter.py           → JSON, CSV, Konsolen-Zusammenfassung
-  video_processor.py    → Zwei-Phasen-Pipeline (Extraktion → Rendering)
+  config.py                 Alle Parameter als Dataclass
+  player_detector.py        player_detection.pt + ByteTrack (auto class-detection)
+  feature_extractor.py      21-dim Trikotfarb-Featurevektor
+  clustering.py             UMAP + HDBSCAN + K-Means + Rollenzuweisung
+  frame_preprocessor.py     White Balance + CLAHE pro Frame
+  video_processor.py        Zwei-Pass-Pipeline (Extraktion → Rendering)
+  tactical_analyzer.py      Formations-, Wurfzonen-, Laufweg-Analyse
+  visualizer.py             OpenCV-Annotation + matplotlib Scatter-Plot
+  reporter.py               JSON, CSV, Konsolenausgabe
+run_tactical.py             Standalone taktische Analyse auf JSON-Ergebnissen
 ```
 
-### Feature-Vektor (22 Dimensionen)
+### Feature-Vektor (21 Dimensionen)
 
 ```
-LAB-Kanal L: Mittelwert + Stddev   (2)
-LAB-Kanal A: Mittelwert + Stddev   (2)
-LAB-Kanal B: Mittelwert + Stddev   (2)
-HSV-Hue-Histogramm: 16 Bins        (16)
-                                 ------
-                                    22
+LAB Kanal L,A,B: Mittelwert + Stddev je   (6)
+white_frac, dark_frac, colorful_frac       (3)
+HSV-Hue-Histogramm (8 Bins, nur S > 60)   (8)
+mean HSV-V, mean HSV-S                     (2)
+BBox-Zentrum x_norm, y_norm               (2)  ← nur für Rollenzuweisung, nicht HDBSCAN
+                                         -----
+                                            21
 ```
 
-Warum LAB + HSV?
-- **LAB** ist perceptuell gleichmäßig → Helligkeitsunterschiede zwischen Kamerapositionen
-  verfälschen den Farbabstand weniger
-- **HSV-Hue** gibt die dominante Trikotfarbe kompakt und beleuchtungsunabhängig wieder
+**Warum nur Farbfeatures für HDBSCAN?** Position wird absichtlich aus dem HDBSCAN-Input ausgeschlossen — sonst würden Spieler gleicher Farbe an verschiedenen Feldpositionen in unterschiedliche Cluster fallen. Die x/y-Koordinaten werden nur nachgelagert für die Torwart-Erkennung genutzt.
+
+### Rollenzuweisung (Reihenfolge)
+
+```
+1. Schiedsrichter  → Cluster mit orange Trikot (colorful + Hue-Bin 0-2)
+                     Fallback: dunkelster Cluster
+2. Torwart A/B    → Cluster mit mean_x < 0.20 oder > 0.80
+                     (Torwarte verlassen das Torraum kaum)
+                     Kein Fallback — oft nur eine Spielfeldhälfte sichtbar → 0 oder 1 Torwart
+3. Team A, Team B  → die zwei größten verbleibenden Cluster
+4. Sonstige        → alle weiteren Cluster
+```
 
 ---
 
-## Grenzen dieses POCs
+## Spielererkennung: player_detection.pt
 
-| Grenze | Ursache | Workaround |
+Das Modell `player_detection.pt` (450 MB) erkennt 3 Klassen:
+
+| Klasse | ID | Beschreibung |
 |---|---|---|
-| Ähnliche Teamfarben → 1 Cluster | HDBSCAN kann keine Gruppen trennen, die im Farbraum überlappen | Mehr Feature-Dimensionen (Textur, Logo-Erkennung) |
-| Hallenlicht schwankt → instabile Features | Weißabgleich variiert zwischen Kamerapositionen | Normalisierung auf Hallenboden-Weiß oder Graukarte |
-| MOG2-Fallback erkennt nur Bewegung | Statische Spieler werden nicht erkannt | Besser mit YOLO-Modell arbeiten |
-| Kein Frame-übergreifendes Tracking | Spieler erhalten keine persistente ID | IoU-Tracker (SORT, ByteTrack) integrieren |
-| 30-Sekunden-Clip = kleine Datenbasis | Dichte-Schätzung weniger robust | Längere Clips oder mehrere Clips kombinieren |
+| `goalkeeper` | 0 | Torwart |
+| `player` | 1 | Feldspieler |
+| `referee` | 2 | Schiedsrichter |
+
+Die YOLO-Klasseninfos werden **nicht** für die HDBSCAN-Rollenzuweisung genutzt — HDBSCAN weist Rollen rein farb- und positionsbasiert zu. Die Klasseninfos stehen im `frame_data` JSON für spätere Auswertungen.
 
 ---
 
-## Ideen für ein größeres Handball-Projekt
+## Test-Protokoll
 
-1. **Persistentes Spieler-Tracking**
-   ByteTrack oder DeepSORT für stabile Spieler-IDs über den gesamten Spielverlauf.
+### Getestete Konfiguration
 
-2. **Robustere Features**
-   Farbhistogramm + CNN-Feature (z. B. ResNet-Embedding des Torso-ROI) für
-   verlässliche Trennung auch bei ähnlichen Teamfarben.
+- Video: `input/0efd265d_test2min.mp4` (2 Minuten, Handball-Spiel)
+- Gerät: CPU
+- Python: 3.14, Windows 11
 
-3. **Online-Clustering**
-   HDBSCAN einmalig auf den ersten 300 Frames trainieren, dann neue Frames mit
-   `hdbscan.approximate_predict()` einordnen — kein Neutraining nötig.
+### Was funktioniert
 
-4. **Formations-Erkennung**
-   Spielerpositionen aus Tracking-Daten → zweite HDBSCAN-Instanz auf Raumkoordinaten
-   für automatische taktische Analyse.
+| Feature | Status | Anmerkung |
+|---|---|---|
+| Spielererkennung mit player_detection.pt | OK | Alle 3 Klassen erkannt (goalkeeper/player/referee) |
+| HDBSCAN 5 Cluster (Teams + Schiri + Torwart) | OK | min_cluster_size=50, color-only features |
+| Rollenzuweisung Team A / Team B | OK | Zwei größte Cluster nach Schiri/Torwart-Entfernung |
+| Rollenzuweisung Schiedsrichter | OK | Orange-Erkennung (Hue-Bin 0-2, colorful_frac > 0.20) |
+| Rollenzuweisung Torwart | OK | mean_x < 0.20 oder > 0.80; 0 oder 1 Torwart möglich |
+| HDBSCAN Visualisierungs-Video | OK | output_hdbscan.mp4 mit Farblegende |
+| K-Means Vergleichsvideo | OK | output_comparison.mp4 |
+| Cluster-Scatter-Plot | OK | 2D UMAP mit Clustereinfärbung |
+| Formations-Analyse Abwehr | OK | tactical_abwehr_*.png pro Team |
+| Angriffsmuster / Spielzüge | OK | tactical_angriff_*.png pro Team |
+| Wurfzonen-Heatmap | OK | tactical_shot_zones.png |
+| Laufwege Trajektorien | OK | tactical_trajectories.png |
+| White Balance + CLAHE | OK | Verbessert Farbkonsistenz zwischen Frames |
+| ROI-Kalibrierung | OK | Filtert Zuschauerbereich aus Detektionen heraus |
 
-5. **Echtzeit-Pipeline**
-   OpenCV + Threading für live Videostream; YOLO auf GPU für >30 fps Processing.
+### Bekannte Einschränkungen
+
+| Einschränkung | Ursache | Empfehlung |
+|---|---|---|
+| Fehlklassifikation bei sehr ähnlichen Trikotfarben | HDBSCAN kann Farb-Cluster zusammenlegen | Silhouette-Score im Log prüfen |
+| Schiedsrichter nicht erkannt | Orange-Hue-Bin-Schwelle passt nicht | `--verbose` → Cluster-Tabelle prüfen, ggf. Schwellwert anpassen |
+| Torwart nicht erkannt | Nur eine Spielfeldhälfte gefilmt → kein extremer x-Wert | Erwartet — kein Fehler |
+| Taktische Analyse wenig Daten | Zu kurzes Video / zu viele Fehlklassifikationen | Längeres Video oder --frame-skip 3 |
+| Zu viele Mikro-Cluster | min_cluster_size zu klein | `--min-cluster-size 100` oder höher testen |
+| Zu wenige Cluster (nur 2) | min_cluster_size zu groß | `--min-cluster-size 30` testen |
+
+### Nicht getestet / Offene Punkte
+
+| Punkt | Status |
+|---|---|
+| CUDA-Beschleunigung (`--device cuda`) | Nicht getestet |
+| Sehr kurze Clips (< 30 Sek.) | Nicht getestet — min_cluster_size ggf. auf 10-20 reduzieren |
+| Videos mit sehr ähnlichen Teamfarben | Nicht getestet |
+| MOG2-Fallback (ohne YOLO) | Nicht mehr empfohlen — player_detection.pt verwenden |
 
 ---
 
-## Wann ist HDBSCAN im Sportvideo gut?
+## Debugging
 
-**Gut geeignet wenn:**
-- Die Anzahl der Kategorien (Teams, Rollen) nicht vorab bekannt ist
-- Ausreißer (verdeckte Spieler, Zuschauer im Bild) sauber ignoriert werden sollen
-- Natürliche Cluster-Strukturen im Farb- oder Positionsraum vorhanden sind
+### Cluster-Tabelle im Log
 
-**Weniger geeignet wenn:**
-- Genau k=2 Teams gesucht werden und beide sehr ähnliche Farben haben → K-Means mit
-  k=2 ist stabiler und schneller
-- Echtzeit-Anforderungen bestehen und die Datenbasis klein ist (<50 Samples)
-- Das Ergebnis vollständig reproduzierbar und erklärbar sein muss (regulierte Umgebung)
+Mit `--verbose` erscheint nach HDBSCAN eine Tabelle aller Cluster:
+
+```
+=== HDBSCAN: 5 Cluster gefunden ===
+  Cluster  0 | n=2949 | Farbe=Blau       | colorful=0.62 | white=0.05 | dark=0.08 | mean_x=0.46 | orange=nein
+  Cluster  1 | n=1929 | Farbe=Weiß       | colorful=0.06 | white=0.58 | dark=0.05 | mean_x=0.54 | orange=nein
+  Cluster  2 | n=1036 | Farbe=Orange-Rot | colorful=0.48 | white=0.09 | dark=0.11 | mean_x=0.50 | orange=JA
+  Cluster  3 | n= 473 | Farbe=Grün       | colorful=0.55 | white=0.06 | dark=0.09 | mean_x=0.08 | orange=nein
+  Cluster  4 | n= 280 | Farbe=Rot        | colorful=0.51 | white=0.07 | dark=0.10 | mean_x=0.92 | orange=nein
+```
+
+**Schiedsrichter nicht erkannt?** → `orange=nein` obwohl Schiri-Cluster vorhanden → colorful_frac zu niedrig oder Hue-Bin > 2. In `src/clustering.py` den `_is_orange_jersey` Schwellwert anpassen.
+
+**Nur 2 Cluster?** → `min_cluster_size` zu groß. Starte mit `--min-cluster-size 30`.
+
+**Zu viele Cluster (>6)?** → `min_cluster_size` erhöhen, z.B. `--min-cluster-size 100`.
+
+---
+
+## HDBSCAN — Warum besser als K-Means?
+
+| Kriterium | HDBSCAN | K-Means |
+|---|---|---|
+| Cluster-Anzahl | Automatisch | Vorab festlegen (k=5) |
+| Noise / Ausreißer | Explizit markiert, dann re-assigniert | Keine Erkennung |
+| Nicht-kugelförmige Cluster | Unterstützt | Nur kugelförmig |
+| Silhouette (UMAP-Space) | 0.706 (bester Lauf) | 0.339 (Original-Space, nicht vergleichbar) |
+| Rollenzuweisung | Farb+Positionsbasiert | Größenbasiert |
+
+**Hinweis:** Die Silhouette-Scores sind nicht direkt vergleichbar — HDBSCAN wird im UMAP-Space berechnet, K-Means im Original-Feature-Space.

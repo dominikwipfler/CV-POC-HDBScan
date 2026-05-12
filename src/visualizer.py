@@ -25,10 +25,14 @@ logger = logging.getLogger(__name__)
 
 # Static roles: fixed colour regardless of jersey colour
 _COLORS_BGR: Dict[str, tuple] = {
+    # Team roles — defaults, overridden by set_team_colors() once jersey is known
+    "Team A":          (220,  60,  20),   # bright blue  (BGR)
+    "Team B":          (20,   20, 220),   # bright red   (BGR)
     # Fixed roles
     "Schiedsrichter":  (0,   220, 220),   # yellow
-    "Torwart A":       (200, 230,   0),   # cyan-green
-    "Torwart B":       (200,   0, 200),   # magenta
+    "Torwart":         (0,   215, 170),   # cyan-green
+    "Torwart A":       (200, 230,   0),   # kept for backwards compat
+    "Torwart B":       (200,   0, 200),   # kept for backwards compat
     "Sonstige":        (120, 120, 120),   # grey
     "Noise / Unklar":  (0,     0, 170),   # dark red
     # Jersey-colour names → approximate BGR hue
@@ -45,7 +49,10 @@ _COLORS_BGR: Dict[str, tuple] = {
     "Lila":            (190,  50, 150),
 }
 _COLORS_MPL: Dict[str, str] = {
+    "Team A":          "#143CFF",
+    "Team B":          "#FF1414",
     "Schiedsrichter":  "#DDDD00",
+    "Torwart":         "#00D5AA",
     "Torwart A":       "#00E6B4",
     "Torwart B":       "#CC00CC",
     "Sonstige":        "#787878",
@@ -70,6 +77,18 @@ class Visualizer:
     def __init__(self, config):
         self._thick = config.bbox_thickness
         self._fscale = config.font_scale
+
+    def set_team_colors(self, team_colors: dict) -> None:
+        """Update Team A/B bounding-box colours to match their detected jersey colour."""
+        for team, jersey in team_colors.items():
+            if team not in ("Team A", "Team B"):
+                continue
+            bgr = _COLORS_BGR.get(jersey)
+            mpl = _COLORS_MPL.get(jersey)
+            if bgr:
+                _COLORS_BGR[team] = bgr
+            if mpl:
+                _COLORS_MPL[team] = mpl
 
     # ------------------------------------------------------------------
     # Frame annotation

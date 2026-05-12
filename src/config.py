@@ -12,9 +12,8 @@ class Config:
     frame_skip: int = 5          # Process every Nth frame
     max_frames: Optional[int] = None  # Cap total frames (quick test mode)
 
-    # Player detection — same model as wels-monorepo (yolo11m.pt = Medium, much better than Nano)
     use_yolo: bool = True
-    yolo_model: str = "yolo11m.pt"    # YOLO11 Medium — same as wels-monorepo
+    yolo_model: str = "player_detection.pt"  # Spezialisiertes Spieler-Erkennungsmodell
     yolo_confidence: float = 0.3      # Lower than YOLOv8 default — catches more players
     yolo_imgsz: int = 1280            # Larger input = better small/distant player detection
     yolo_device: str = "cpu"          # "cuda" on GPU machines
@@ -32,19 +31,15 @@ class Config:
     # HDBSCAN — with UMAP preprocessing, much lower values work (tight embedded clusters)
     # Rule of thumb with UMAP: min_cluster_size ≈ 0.3–1% of total samples
     # For 6000 samples → 20–60; without UMAP use 100–200
-    hdbscan_min_cluster_size: int = 80
+    hdbscan_min_cluster_size: int = 50
     hdbscan_min_samples: int = 5
 
     # K-Means comparison — 4 classes: Team A, Team B, Torwart, Schiedsrichter
-    kmeans_k: int = 4
+    kmeans_k: int = 5
 
     # Visualisation
     bbox_thickness: int = 2
     font_scale: float = 0.50
-
-    # Court keypoint model (YOLO-pose, optional)
-    court_model_path: str = "best_court.pt"   # set to "" to disable
-    court_hull_frames: int = 30               # frames sampled for court calibration
 
     # Debug output
     save_debug_frames: bool = True

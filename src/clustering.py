@@ -5,13 +5,12 @@ Design decisions
 ----------------
 - Features are StandardScaler-normalised before clustering.
 - UMAP reduces the 19-dim feature space to 10D before HDBSCAN.
-- HDBSCAN runs with cluster_selection_epsilon > 0 to merge nearby micro-clusters
-  (important for achromatic jerseys like white that spread in feature space).
+- HDBSCAN runs with cluster_selection_epsilon = 0 (sklearn 1.8.0 bug with > 0).
 - Noise points are assigned to the nearest centroid in UMAP space.
-- Role assignment is colour-aware:
-    1. Darkest cluster (dark_frac) → Schiedsrichter
-    2. Two largest remaining    → Team A, Team B
-    3. Smaller remaining        → Torwart, Weitere
+- Role assignment is colour-aware (no YOLO class labels):
+    1. Orange cluster (refs wear orange) → Schiedsrichter
+    2. Two LARGEST remaining clusters    → Team A, Team B
+    3. All remaining clusters            → Torwart
 """
 
 from __future__ import annotations
@@ -49,7 +48,7 @@ _HUE_NAMES = ["Rot", "Orange-Rot", "Orange", "Gelb",
                "Grün", "Türkis", "Blau", "Lila"]
 
 # Fallback role names ordered by cluster size (used only by map_roles())
-_ROLE_NAMES = ["Team A", "Team B", "Schiedsrichter", "Torwart A", "Torwart B", "Sonstige"]
+_ROLE_NAMES = ["Team A", "Team B", "Schiedsrichter", "Torwart", "Torwart", "Torwart"]
 
 
 def _infer_jersey_color(centroid: np.ndarray) -> str:
@@ -67,6 +66,25 @@ def _infer_jersey_color(centroid: np.ndarray) -> str:
 
     hue_hist = centroid[_IDX_HUE_START: _IDX_HUE_START + 8]
     return _HUE_NAMES[int(np.argmax(hue_hist))]
+
+
+def _is_orange_jersey(centroid: np.ndarray) -> bool:
+    """Return True if centroid matches an orange jersey (handball referees).
+
+    Orange in OpenCV HSV (0–180 scale) sits at roughly hue 10–30°, which falls
+    into hue bins 0 (0–22.5°) and 1 (22.5–45°) of the 8-bin histogram.
+    The jersey must be colourful (saturated), not dark and not white.
+    """
+    white_frac = float(centroid[_IDX_WHITE])
+    dark_frac  = float(centroid[_IDX_DARK])
+    colorful   = float(centroid[_IDX_COLORFUL])
+    hue_hist   = centroid[_IDX_HUE_START: _IDX_HUE_START + 8]
+    dominant   = int(np.argmax(hue_hist))
+    # Orange: saturated, not white/dark, hue peak in red–orange range (bins 0–2)
+    return (colorful > 0.20
+            and white_frac < 0.40
+            and dark_frac  < 0.40
+            and dominant   <= 2)
 
 
 # ---------------------------------------------------------------------------
@@ -100,17 +118,16 @@ class ClusterResult:
 
     def map_roles_smart(self, raw_features: np.ndarray) -> Dict[int, str]:
         """
-        Role assignment with at most 5 named groups.
+        Colour + position based role assignment.
 
-        1. Two LARGEST clusters → Team A, Team B (colour-agnostic).
-           Jersey colour names are inferred and stored in self.team_colors.
-        2. Cluster with max combined L2-distance from Team A and Team B
-           centroids → Schiedsrichter (works for orange, red, any colour).
-        3. Next two by size → Torwart A, Torwart B.
-        4. All others → Sonstige.
+        Order (most distinctive signal first):
+          1. Schiedsrichter  — orange jersey (strongest colour signal, unambiguous)
+                               Fallback: darkest cluster if no orange found
+          2. Team A, Team B  — the two largest remaining clusters
+          3. Torwart         — all remaining clusters (single label, no A/B split)
         """
         unique: List[int] = sorted(l for l in set(self.labels) if l != -1)
-        self.role_map   = {-1: "Noise / Unklar"}
+        self.role_map    = {-1: "Noise / Unklar"}
         self.team_colors = {}
 
         if not unique:
@@ -121,71 +138,62 @@ class ClusterResult:
 
         centroids = {l: raw_features[self.labels == l].mean(axis=0) for l in unique}
         counts    = {l: int(np.sum(self.labels == l)) for l in unique}
-
-        # Step 1 — Teams: two largest clusters
         by_size   = sorted(unique, key=lambda l: counts[l], reverse=True)
         remaining = list(by_size)
-        team_lbls: List[int] = []
+
+        # ── Cluster-Übersicht ────────────────────────────────────────────
+        has_pos = raw_features.shape[1] > _IDX_POS_X
+        logger.info("=== HDBSCAN: %d Cluster gefunden ===", len(unique))
+        for lbl in by_size:
+            c = centroids[lbl]
+            mean_x = float(c[_IDX_POS_X]) if has_pos else float("nan")
+            logger.info(
+                "  Cluster %2d | n=%4d | Farbe=%-12s | colorful=%.2f"
+                " | white=%.2f | dark=%.2f | mean_x=%.2f | orange=%s",
+                lbl, counts[lbl], _infer_jersey_color(c),
+                float(c[_IDX_COLORFUL]), float(c[_IDX_WHITE]), float(c[_IDX_DARK]),
+                mean_x, "JA" if _is_orange_jersey(c) else "nein",
+            )
+
+        # ── Step 1: Schiedsrichter — orange jersey ───────────────────────
+        # Both referees wear the same orange → one cluster, any size.
+        # Detected FIRST so they cannot accidentally become a "team".
+        schiri_lbl: Optional[int] = None
+        for lbl in list(remaining):
+            if _is_orange_jersey(centroids[lbl]):
+                schiri_lbl = lbl
+                remaining.remove(lbl)
+                self.role_map[lbl] = "Schiedsrichter"
+                logger.info("Schiedsrichter (orange) <- Cluster %d  n=%d",
+                            lbl, counts[lbl])
+                break
+
+        if schiri_lbl is None:
+            # Fallback: darkest cluster if no orange found
+            if remaining:
+                darkest = max(remaining, key=lambda l: float(centroids[l][_IDX_DARK]))
+                if float(centroids[darkest][_IDX_DARK]) > 0.10:
+                    remaining.remove(darkest)
+                    self.role_map[darkest] = "Schiedsrichter"
+                    logger.info("Schiedsrichter (dunkel-fallback) <- Cluster %d", darkest)
+
+        # ── Step 2: Teams — two largest remaining ────────────────────────
         for team_name in ("Team A", "Team B"):
             if not remaining:
                 break
-            lbl = remaining.pop(0)
+            lbl = remaining.pop(0)          # already sorted by size, largest first
             color = _infer_jersey_color(centroids[lbl])
-            display_name = color          # e.g. "Grün", "Orange", "Weiß"
-            self.role_map[lbl]         = display_name
+            self.role_map[lbl]          = team_name
             self.team_colors[team_name] = color
-            team_lbls.append(lbl)
-            logger.debug("%s (%s) ← Cluster %d  size=%d",
-                         team_name, color, lbl, counts[lbl])
+            logger.info("%s (%s) <- Cluster %d  n=%d",
+                        team_name, color, lbl, counts[lbl])
 
-        # Step 2 — Schiedsrichter: pick the cluster that is most "unlike both
-        # teams" weighted by its smallness.  Referees are always few people, so
-        # among similarly-distant clusters we prefer the smaller one.
-        #
-        # score = max(dist_to_A, dist_to_B) / sqrt(size)
-        #   • max(dist) rewards being very different from at least ONE team
-        #     (works even when referee orange ≈ team orange)
-        #   • /sqrt(size) penalises large clusters so we don't mislabel a
-        #     big field-player cluster as Schiri
-        if remaining:
-            team_centroids = np.array([centroids[l] for l in team_lbls])
-            def _schiri_score(lbl: int) -> float:
-                c = centroids[lbl][:19].reshape(1, -1)   # colour dims only
-                tc = team_centroids[:, :19]
-                dists = pairwise_distances(c, tc, metric="euclidean")[0]
-                return float(dists.max()) / float(counts[lbl] ** 0.5 + 1e-8)
-            best = max(remaining, key=_schiri_score)
-            self.role_map[best] = "Schiedsrichter"
-            remaining.remove(best)
-            logger.debug("Schiedsrichter ← Cluster %d  score=%.3f  color=%s",
-                         best, _schiri_score(best),
-                         _infer_jersey_color(centroids[best]))
-
-        # Step 3 — Torwart A / Torwart B: prefer clusters whose mean x-position
-        # is closest to a goal line (x ≈ 0 or x ≈ 1).  Goalkeepers rarely
-        # leave their goal area, so their cluster centroid x is extreme.
-        # Falls back to size order if position features are unavailable.
-        if remaining and raw_features.shape[1] > _IDX_POS_X:
-            remaining = sorted(
-                remaining,
-                key=lambda l: float(np.minimum(
-                    centroids[l][_IDX_POS_X],
-                    1.0 - centroids[l][_IDX_POS_X]
-                ))
-            )
-        for tw_name in ("Torwart A", "Torwart B"):
-            if not remaining:
-                break
-            lbl = remaining.pop(0)
-            self.role_map[lbl] = tw_name
-            logger.debug("%s ← Cluster %d  mean_x=%.2f",
-                         tw_name, lbl,
-                         centroids[lbl][_IDX_POS_X]
-                         if raw_features.shape[1] > _IDX_POS_X else float("nan"))
-
-        # Step 4 — Everything else → Sonstige
+        # ── Step 3: Torwart — all remaining clusters ─────────────────────
         for lbl in remaining:
-            self.role_map[lbl] = "Sonstige"
+            self.role_map[lbl] = "Torwart"
+            mean_x = float(centroids[lbl][_IDX_POS_X]) if has_pos else float("nan")
+            logger.info("Torwart <- Cluster %d  n=%d  mean_x=%.2f",
+                        lbl, counts[lbl], mean_x)
 
         logger.info("Rollenzuweisung: %s", self.role_map)
         logger.info("Trikotfarben:    %s", self.team_colors)
@@ -213,7 +221,7 @@ class ClusteringEngine:
     # ------------------------------------------------------------------
 
     def fit(self, features: np.ndarray,
-            raw_features: Optional[np.ndarray] = None
+            raw_features: Optional[np.ndarray] = None,
             ) -> Tuple[ClusterResult, Optional[ClusterResult]]:
         _raw = raw_features if raw_features is not None else features
         logger.info("Clustering von %d Feature-Vektoren …", len(features))
@@ -237,17 +245,22 @@ class ClusteringEngine:
                             min_dist=0.3, random_state=42, metric="euclidean")
             self._umap_2d = umap_vis.fit_transform(self._features_scaled)
 
-        # Auto-scale min_cluster_size to dataset size.
-        # Small datasets  → may reduce to avoid requiring impossibly large clusters.
-        # Large datasets  → scale UP so we don't get dozens of micro-clusters.
-        # Target: each cluster must hold at least ~1.5 % of all samples.
-        auto_cs = max(self._min_cluster_size, int(len(features) * 0.015))
-        min_cs  = min(auto_cs, max(2, len(features) // 8))
+        # Respect the user's min_cluster_size exactly.
+        # Only reduce it for tiny datasets (< 4× the requested size),
+        # never increase it — inflating it kills small clusters (e.g. goalkeepers).
+        min_cs = min(self._min_cluster_size, max(2, len(features) // 4))
         if min_cs != self._min_cluster_size:
-            logger.info("min_cluster_size angepasst: %d → %d  (n=%d)",
+            logger.info("min_cluster_size reduziert: %d → %d  (n=%d, zu klein für Dataset)",
                         self._min_cluster_size, min_cs, len(features))
 
-        hdb = self._fit_hdbscan(self._features_scaled, min_cs)
+        # HDBSCAN clusters on COLOUR features only (first 19 dims).
+        # Excluding position prevents players at different field positions but
+        # same jersey colour from being split into separate clusters.
+        # Position features stay in _raw for goalkeeper detection in map_roles_smart.
+        n_color = min(19, self._features_scaled.shape[1])
+        color_only = self._features_scaled[:, :n_color]
+
+        hdb = self._fit_hdbscan(color_only, min_cs)
         hdb.map_roles_smart(_raw)
 
         km = self._fit_kmeans(self._features_scaled)

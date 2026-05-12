@@ -32,7 +32,6 @@ import numpy as np
 from tqdm import tqdm
 
 from .clustering import ClusteringEngine
-from .court_keypoint_detector import CourtKeypointDetector
 from .feature_extractor import FeatureExtractor
 from .frame_preprocessor import FramePreprocessor
 from .player_detector import get_detector
@@ -57,15 +56,6 @@ class VideoProcessor:
         self._vis = Visualizer(config)
         self._reporter = Reporter(config)
 
-        # Court keypoint detector (optional — disabled if model file absent)
-        self._court = CourtKeypointDetector(
-            config.court_model_path, device=config.yolo_device)
-        self._court_active = bool(config.court_model_path) and self._court.load()
-        if self._court_active:
-            logger.info("Court-Keypoint-Detektor aktiv")
-        else:
-            logger.info("Court-Keypoint-Detektor deaktiviert (Modell fehlt oder deaktiviert)")
-
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -80,16 +70,8 @@ class VideoProcessor:
             logger.info("Pass 0 – ROI-Kalibrierung …")
             self._preprocessor.calibrate_roi(str(vpath))
 
-        # Pass 0b: Court keypoint calibration (builds convex-hull boundary)
-        if self._court_active:
-            logger.info("Pass 0b – Court-Kalibrierung …")
-            ok = self._court.calibrate(str(vpath), self._cfg.court_hull_frames)
-            if not ok:
-                logger.warning("Court-Kalibrierung fehlgeschlagen — alle Detektionen werden akzeptiert")
-                self._court_active = False
-
         # Pass 1: extract
-        all_features, frame_data = self._pass_extract(vpath)
+        all_features, all_yolo_classes, frame_data = self._pass_extract(vpath)
         n_samples = len(all_features)
         logger.info("Pass 1 fertig: %d Spieler-Samples aus %d Frames",
                     n_samples, len(frame_data))
@@ -100,8 +82,11 @@ class VideoProcessor:
                 "Konfidenz (--yolo-confidence) oder --frame-skip.", n_samples)
             return
 
-        # Clustering
+        # HDBSCAN role assignment purely by jersey colour (no YOLO class labels)
         hdb, km = self._clusterer.fit(all_features)
+
+        # Update bounding-box colours for Team A/B to match their actual jersey colour
+        self._vis.set_team_colors(hdb.team_colors)
 
         # Write labels back into frame_data (dicts are mutable → in-place)
         for fdata in frame_data.values():
@@ -129,13 +114,12 @@ class VideoProcessor:
         frame_h = int(cap_tmp.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap_tmp.release()
 
-        # Derive the actual role name (jersey colour) for Team A and Team B
-        team_colors = hdb.team_colors  # {"Team A": "Grün", "Team B": "Orange"}
-        teams = (
-            team_colors.get("Team A", "Team A"),
-            team_colors.get("Team B", "Team B"),
-        )
-        logger.info("Trikotfarben: Team A=%s  Team B=%s", teams[0], teams[1])
+        # role_map uses "Team A" / "Team B" as labels — always pass these as teams.
+        # team_colors holds the jersey colour name for display: {"Team A": "Blau", ...}
+        team_colors = hdb.team_colors
+        teams: tuple = ("Team A", "Team B")
+        logger.info("Trikotfarben: Team A=%s  Team B=%s",
+                    team_colors.get("Team A", "?"), team_colors.get("Team B", "?"))
 
         logger.info("Starte taktische Analysen …")
         try:
@@ -151,7 +135,7 @@ class VideoProcessor:
             logger.warning("Wurfzonen-Analyse fehlgeschlagen: %s", exc)
         try:
             analyze_trajectories(frame_data, frame_w, frame_h, self._out,
-                                 role_map=hdb.role_map)
+                                 role_map=hdb.role_map, team_colors=team_colors)
         except Exception as exc:
             logger.warning("Trajektorien-Analyse fehlgeschlagen: %s", exc)
 
@@ -168,6 +152,7 @@ class VideoProcessor:
         logger.info("Video: %d Frames @ %.1f fps", total, fps)
 
         all_features: List[np.ndarray] = []
+        all_yolo_classes: List[str] = []
         frame_data: Dict[int, dict] = {}
         feat_idx = 0
         frame_cnt = 0
@@ -219,6 +204,7 @@ class VideoProcessor:
                         "bbox": full_bbox,
                         "confidence": det.confidence,
                         "track_id": det.track_id,
+                        "yolo_class": det.class_name,
                         "det_idx": di,
                         "feature_idx": feat_idx,
                         "features": feats.tolist(),
@@ -227,6 +213,7 @@ class VideoProcessor:
                         "kmeans_label": -1,
                     })
                     all_features.append(feats)
+                    all_yolo_classes.append(det.class_name)
                     feat_idx += 1
 
                 frame_data[frame_cnt] = {"detections": det_records}
@@ -250,8 +237,8 @@ class VideoProcessor:
         pbar.close()
 
         if not all_features:
-            return np.empty((0, FeatureExtractor.FEATURE_DIM), dtype=np.float32), frame_data
-        return np.stack(all_features), frame_data
+            return np.empty((0, FeatureExtractor.FEATURE_DIM), dtype=np.float32), [], frame_data
+        return np.stack(all_features), all_yolo_classes, frame_data
 
     # ------------------------------------------------------------------
     # Pass 2: render annotated output

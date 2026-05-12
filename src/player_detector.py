@@ -21,20 +21,21 @@ Key differences from original YOLOv8 approach
 import cv2
 import numpy as np
 import logging
-from typing import List
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-_PERSON_CLASS = 0  # COCO class ID
-
 
 class Detection:
-    __slots__ = ("bbox", "confidence", "track_id")
+    __slots__ = ("bbox", "confidence", "track_id", "class_id", "class_name")
 
-    def __init__(self, bbox: tuple, confidence: float = 1.0, track_id: int = -1):
-        self.bbox = bbox          # (x1, y1, x2, y2) ints
+    def __init__(self, bbox: tuple, confidence: float = 1.0, track_id: int = -1,
+                 class_id: int = 0, class_name: str = "player"):
+        self.bbox = bbox
         self.confidence = confidence
-        self.track_id = track_id  # ByteTrack stable ID; -1 if tracking lost
+        self.track_id = track_id
+        self.class_id = class_id
+        self.class_name = class_name
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +43,7 @@ class Detection:
 # ---------------------------------------------------------------------------
 
 class YOLODetector:
-    def __init__(self, model_name: str = "yolo11n.pt",
+    def __init__(self, model_name: str = "player_detection.pt",
                  confidence: float = 0.3,
                  min_height: int = 50,
                  imgsz: int = 1280,
@@ -57,11 +58,22 @@ class YOLODetector:
             self._min_h = min_height
             self._imgsz = imgsz
             self._max = max_persons
-            # FP16 only on CUDA
             self._half = (device != "cpu")
+
+            # Auto-detect which class IDs to use:
+            # Standard COCO models (80 classes) → filter to "person" class 0.
+            # Custom sports models (≤10 classes without "person") → detect all classes.
+            self._class_names: dict = getattr(self._model, "names", {0: "player"})
+            if any(v == "person" for v in self._class_names.values()):
+                person_ids = [k for k, v in self._class_names.items() if v == "person"]
+                self._detect_classes: Optional[List[int]] = person_ids
+            else:
+                self._detect_classes = None  # detect all classes
+
             self._available = True
-            logger.info("YOLO11 + ByteTrack bereit: %s  device=%s  imgsz=%d  conf=%.2f",
-                        model_name, device, imgsz, confidence)
+            logger.info("YOLO + ByteTrack bereit: %s  device=%s  imgsz=%d  conf=%.2f  classes=%s",
+                        model_name, device, imgsz, confidence,
+                        list(self._class_names.values()))
         except Exception as exc:
             logger.warning("YOLO nicht verfügbar (%s). Nutze MOG2-Fallback.", exc)
 
@@ -76,7 +88,7 @@ class YOLODetector:
 
         results = self._model.track(
             frame,
-            classes=[_PERSON_CLASS],
+            classes=self._detect_classes,
             conf=self._conf,
             imgsz=self._imgsz,
             half=self._half,
@@ -95,10 +107,14 @@ class YOLODetector:
                 if (y2 - y1) < self._min_h:
                     continue
                 track_id = int(box.id[0]) if box.id is not None else -1
+                class_id = int(box.cls[0]) if box.cls is not None else 0
+                class_name = self._class_names.get(class_id, "player")
                 out.append(Detection(
                     bbox=(x1, y1, x2, y2),
                     confidence=float(box.conf[0]),
                     track_id=track_id,
+                    class_id=class_id,
+                    class_name=class_name,
                 ))
 
         out.sort(key=lambda d: d.confidence, reverse=True)

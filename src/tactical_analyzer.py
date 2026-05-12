@@ -39,11 +39,16 @@ logger = logging.getLogger(__name__)
 # ── Colour maps ───────────────────────────────────────────────────────────────
 
 _TEAM_COLORS: Dict[str, str] = {
-    "Schiedsrichter": "#DDDD00",
+    # Role names
+    "Team A":         "#4488FF",
+    "Team B":         "#FF4444",
+    "Schiedsrichter": "#FF8C00",
+    "Torwart":        "#00D5AA",
     "Torwart A":      "#00E6B4",
     "Torwart B":      "#CC00CC",
     "Sonstige":       "#787878",
     "Unbekannt":      "#888888",
+    # Jersey colour names (from _infer_jersey_color)
     "Weiß":           "#E6E6E6",
     "Dunkel":         "#3C3C3C",
     "Grau":           "#A0A0A0",
@@ -598,7 +603,7 @@ def analyze_formations(frame_data: Dict, role_map: Dict[int, str],
 
     for team_key, team in zip(("Team A", "Team B"), teams):
         jersey = _tc.get(team_key, team)
-        tcolor = _TEAM_COLORS.get(team, "#888888")
+        tcolor = _TEAM_COLORS.get(jersey, _TEAM_COLORS.get(team, "#888888"))
 
         # ── ABWEHR: classify formation per frame ──────────────────────────
         formation_counts:    Dict[str, int] = {}
@@ -749,6 +754,7 @@ def analyze_trajectories(frame_data: Dict,
                          frame_w: int, frame_h: int,
                          output_dir: Path,
                          role_map: Optional[Dict] = None,
+                         team_colors: Optional[Dict[str, str]] = None,
                          min_track_len: int = 15) -> None:
     """
     Left:  full court — density heatmap per role + individual track lines on top.
@@ -804,6 +810,15 @@ def analyze_trajectories(frame_data: Dict,
     total   = sum(track_count.values())
     logger.info("Trajektorien: %d Tracks in %d Rollen", total, len(ordered))
 
+    # Build colour lookup: role name → hex colour.
+    # For "Team A"/"Team B" prefer the jersey colour name stored in team_colors.
+    _tc = team_colors or {}
+    def _role_color(role: str) -> str:
+        jersey = _tc.get(role)          # e.g. "Team A" → "Blau"
+        if jersey:
+            return _TEAM_COLORS.get(jersey, _TEAM_COLORS.get(role, "#aaaaaa"))
+        return _TEAM_COLORS.get(role, "#aaaaaa")
+
     # ── Figure ────────────────────────────────────────────────────────────────
     fig = plt.figure(figsize=(20, 8))
     fig.patch.set_facecolor("#111111")
@@ -814,7 +829,7 @@ def analyze_trajectories(frame_data: Dict,
 
     legend_patches = []
     for role in ordered[:6]:
-        chex = _TEAM_COLORS.get(role, "#aaaaaa")
+        chex = _role_color(role)
         pts  = role_pts.get(role)
         if pts is None or len(pts[0]) < 20:
             continue
@@ -857,7 +872,7 @@ def analyze_trajectories(frame_data: Dict,
     bar_h = 0.7 / max(len(ordered), 1)
 
     for i, role in enumerate(ordered[:6]):
-        chex  = _TEAM_COLORS.get(role, "#aaaaaa")
+        chex  = _role_color(role)
         stats = role_stats.get(role, {})
         vals  = [float(np.mean(stats.get(k, [0.0]))) for k in stat_keys]
         off   = (i - len(ordered) / 2 + 0.5) * bar_h
