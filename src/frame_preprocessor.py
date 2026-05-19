@@ -151,22 +151,23 @@ class FramePreprocessor:
         cap = cv2.VideoCapture(video_path)
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        interval = max(1, total // n_samples)
+
+        # Jump directly to evenly-spaced frames instead of reading sequentially
+        sample_indices = [int(i * total / n_samples) for i in range(n_samples)]
+        logger.info("ROI-Kalibrierung: %d Frames werden gesampelt …", n_samples)
 
         y_tops, y_bottoms, confs = [], [], []
-        fc = 0
-        while cap.isOpened():
+        for idx in sample_indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ret, frame = cap.read()
             if not ret:
-                break
-            if fc % interval == 0:
-                roi, conf = detect_court_roi(frame)
-                if roi is not None:
-                    _, y, _, h = roi
-                    y_tops.append(y)
-                    y_bottoms.append(y + h)
-                    confs.append(conf)
-            fc += 1
+                continue
+            roi, conf = detect_court_roi(frame)
+            if roi is not None:
+                _, y, _, h = roi
+                y_tops.append(y)
+                y_bottoms.append(y + h)
+                confs.append(conf)
         cap.release()
 
         if not y_tops:

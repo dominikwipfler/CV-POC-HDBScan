@@ -21,6 +21,7 @@ Key differences from original YOLOv8 approach
 import cv2
 import numpy as np
 import logging
+from pathlib import Path
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,11 @@ class YOLODetector:
         self._available = False
         try:
             import ultralytics
+            # Fallback: look in models/ subdirectory if not found at given path
+            if not Path(model_name).exists() and not Path(model_name).is_absolute():
+                candidate = Path("models") / model_name
+                if candidate.exists():
+                    model_name = str(candidate)
             self._model = ultralytics.YOLO(model_name)
             self._model.to(device)
             self._conf = confidence

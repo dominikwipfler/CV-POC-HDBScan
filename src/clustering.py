@@ -118,13 +118,15 @@ class ClusterResult:
 
     def map_roles_smart(self, raw_features: np.ndarray) -> Dict[int, str]:
         """
-        Colour + position based role assignment.
+        Position + colour based role assignment.
 
-        Order (most distinctive signal first):
-          1. Schiedsrichter  — orange jersey (strongest colour signal, unambiguous)
-                               Fallback: darkest cluster if no orange found
-          2. Team A, Team B  — the two largest remaining clusters
-          3. Torwart         — all remaining clusters (single label, no A/B split)
+        Order:
+          1. Team A, Team B  — the two largest clusters (dominate by player count)
+          2. Torwart         — remaining clusters that stay near a goal (position-based)
+                               Each goalkeeper has a different jersey → separate cluster.
+                               At most one per goal side (left: mean_x ≤ 0.15, right: ≥ 0.85).
+          3. Schiedsrichter  — all remaining clusters (field ref + line judge share
+                               the same jersey colour → typically one larger cluster)
         """
         unique: List[int] = sorted(l for l in set(self.labels) if l != -1)
         self.role_map    = {-1: "Noise / Unklar"}
@@ -146,54 +148,71 @@ class ClusterResult:
         logger.info("=== HDBSCAN: %d Cluster gefunden ===", len(unique))
         for lbl in by_size:
             c = centroids[lbl]
-            mean_x = float(c[_IDX_POS_X]) if has_pos else float("nan")
+            if has_pos:
+                xs = raw_features[self.labels == lbl, _IDX_POS_X]
+                mean_x = float(xs.mean())
+                std_x  = float(xs.std())
+            else:
+                mean_x = std_x = float("nan")
             logger.info(
                 "  Cluster %2d | n=%4d | Farbe=%-12s | colorful=%.2f"
-                " | white=%.2f | dark=%.2f | mean_x=%.2f | orange=%s",
+                " | white=%.2f | dark=%.2f | mean_x=%.2f | std_x=%.2f",
                 lbl, counts[lbl], _infer_jersey_color(c),
                 float(c[_IDX_COLORFUL]), float(c[_IDX_WHITE]), float(c[_IDX_DARK]),
-                mean_x, "JA" if _is_orange_jersey(c) else "nein",
+                mean_x, std_x,
             )
 
-        # ── Step 1: Schiedsrichter — orange jersey ───────────────────────
-        # Both referees wear the same orange → one cluster, any size.
-        # Detected FIRST so they cannot accidentally become a "team".
-        schiri_lbl: Optional[int] = None
-        for lbl in list(remaining):
-            if _is_orange_jersey(centroids[lbl]):
-                schiri_lbl = lbl
-                remaining.remove(lbl)
-                self.role_map[lbl] = "Schiedsrichter"
-                logger.info("Schiedsrichter (orange) <- Cluster %d  n=%d",
-                            lbl, counts[lbl])
-                break
-
-        if schiri_lbl is None:
-            # Fallback: darkest cluster if no orange found
-            if remaining:
-                darkest = max(remaining, key=lambda l: float(centroids[l][_IDX_DARK]))
-                if float(centroids[darkest][_IDX_DARK]) > 0.10:
-                    remaining.remove(darkest)
-                    self.role_map[darkest] = "Schiedsrichter"
-                    logger.info("Schiedsrichter (dunkel-fallback) <- Cluster %d", darkest)
-
-        # ── Step 2: Teams — two largest remaining ────────────────────────
+        # ── Step 1: Teams — two largest clusters ─────────────────────────
         for team_name in ("Team A", "Team B"):
             if not remaining:
                 break
-            lbl = remaining.pop(0)          # already sorted by size, largest first
+            lbl = remaining.pop(0)
             color = _infer_jersey_color(centroids[lbl])
             self.role_map[lbl]          = team_name
             self.team_colors[team_name] = color
             logger.info("%s (%s) <- Cluster %d  n=%d",
                         team_name, color, lbl, counts[lbl])
 
-        # ── Step 3: Torwart — all remaining clusters ─────────────────────
+        # ── Step 2: Torwart — position-based, one per goal side ──────────
+        # Goalkeepers stay in the 6 m zone (mean_x ≤ 0.15 or ≥ 0.85) and
+        # have low lateral variance (std_x < 0.12).
+        # Each goalkeeper has a different jersey → each is its own cluster.
+        GK_ZONE    = 0.15
+        GK_STD_MAX = 0.12
+        total_n    = sum(counts[l] for l in unique)
+
+        gk_left:  List[tuple] = []   # (n, lbl) near left goal
+        gk_right: List[tuple] = []   # near right goal
+
+        if has_pos:
+            for lbl in list(remaining):
+                xs     = raw_features[self.labels == lbl, _IDX_POS_X]
+                mean_x = float(xs.mean())
+                std_x  = float(xs.std())
+                # Skip clusters that are too large to be a single goalkeeper
+                if std_x > GK_STD_MAX or counts[lbl] > total_n * 0.15:
+                    continue
+                if mean_x <= GK_ZONE:
+                    gk_left.append((counts[lbl], lbl))
+                elif mean_x >= 1.0 - GK_ZONE:
+                    gk_right.append((counts[lbl], lbl))
+
+        for side in (gk_left, gk_right):
+            if side:
+                _, best_lbl = max(side)
+                remaining.remove(best_lbl)
+                self.role_map[best_lbl] = "Torwart"
+                xs = raw_features[self.labels == best_lbl, _IDX_POS_X]
+                logger.info("Torwart (Position) <- Cluster %d  n=%d  mean_x=%.2f  std_x=%.2f",
+                            best_lbl, counts[best_lbl],
+                            float(xs.mean()), float(xs.std()))
+
+        # ── Step 3: Schiedsrichter — all remaining clusters ───────────────
+        # Field referee + line judge share the same jersey → one (possibly larger)
+        # cluster. Any cluster not assigned above is a referee.
         for lbl in remaining:
-            self.role_map[lbl] = "Torwart"
-            mean_x = float(centroids[lbl][_IDX_POS_X]) if has_pos else float("nan")
-            logger.info("Torwart <- Cluster %d  n=%d  mean_x=%.2f",
-                        lbl, counts[lbl], mean_x)
+            self.role_map[lbl] = "Schiedsrichter"
+            logger.info("Schiedsrichter <- Cluster %d  n=%d", lbl, counts[lbl])
 
         logger.info("Rollenzuweisung: %s", self.role_map)
         logger.info("Trikotfarben:    %s", self.team_colors)

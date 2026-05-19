@@ -263,14 +263,15 @@ class VideoProcessor:
                 logger.warning("Vergleichs-Video konnte nicht erstellt werden: %s", exc)
 
         divider = np.full((h, 4, 3), 180, dtype=np.uint8)
+        max_frames = self._cfg.max_frames or total
         frame_cnt = 0
         debug_label_saved = 0
         last_dets: list = []   # carry-forward: last sampled frame's detections
 
-        with tqdm(total=total, desc="Pass 2 – Video rendern", unit="frame") as pbar:
+        with tqdm(total=min(total, max_frames), desc="Pass 2 – Video rendern", unit="frame") as pbar:
             while cap.isOpened():
                 ret, frame = cap.read()
-                if not ret:
+                if not ret or frame_cnt >= max_frames:
                     break
 
                 # Update carry-forward on sampled frames
